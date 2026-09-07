@@ -403,6 +403,14 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
         # get these from profile.default_headers, but this route never sees the profile.
         for k, v in _attribution_headers().items():
             headers.setdefault(k, v)
+        # OpenCode Go requires x-opencode-session for backend routing (enforced 2026-09-06).
+        try:
+            from agent.opencode_affinity import opencode_session_headers
+            session_headers = opencode_session_headers("opencode-go", base_url, None)
+            if session_headers:
+                headers.update(session_headers)
+        except Exception:
+            pass
     return _new_sdk_client(sdk, kwargs, headers)
 
 
