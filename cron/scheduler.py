@@ -1511,7 +1511,25 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
         }
         if job.get("base_url"):
             runtime_kwargs["explicit_base_url"] = job.get("base_url")
-        return resolve_runtime_provider(**runtime_kwargs), model
+        # Cron agents run in a subprocess whose env may not include the profile .env credentials
+        # (multiplex gateway skips dotenv loads; the no_agent path already reloads via
+        # load_hermes_dotenv but the agent path does not). Reload the profile .env explicitly
+        # (does not override existing values) so explicit_api_key can be derived from it.
+        try:
+            from hermes_cli.env_loader import load_hermes_dotenv
+            load_hermes_dotenv(hermes_home=_get_hermes_home())
+            import os as _os
+            _key = _os.environ.get("OPENCODE_GO_API_KEY") or _os.environ.get("OPENCODE_API_KEY")
+            if _key:
+                runtime_kwargs["explicit_api_key"] = _key
+        except Exception:
+            logger.debug("Job '%s': agent-path .env reload failed", job_id, exc_info=True)
+        runtime = resolve_runtime_provider(**runtime_kwargs)
+        primary_provider_for_drift = (
+            str(runtime.get("provider") or "").strip().lower() or primary_provider_for_drift
+        )
+        return runtime, model, primary_provider_for_drift
+
     except Exception as resolve_exc:
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during
         # OAuth refresh); anything else re-raises.
@@ -2250,6 +2268,17 @@ def run_job(
         if scope.workdir:
             logger.info("Job '%s': using task-scoped workdir %s", job_id, scope.workdir)
         _reload_dotenv_and_publish_delivery_target(job)
+
+        # CRON+MULTIPLEX FIX: load the profile .env into this subprocess even when the gateway runs in
+        # multiplex mode. The cron agent is an ephemeral subprocess with start_new_session=True; its env
+        # does not leak back to sibling turns. Without this, credentials stored in the profile .env are
+        # invisible to resolve_runtime_provider() and the API key becomes None.
+        try:
+            from hermes_cli.env_loader import load_hermes_dotenv
+
+            load_hermes_dotenv(hermes_home=_get_hermes_home())
+        except Exception:
+            pass
 
         jc = _load_cron_job_config(job, job_id, job_name)
         _cfg = jc.cfg

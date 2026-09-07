@@ -14,6 +14,7 @@ from agent.reasoning_effort import (
     kimi_supported_efforts, requested_effort,
 )
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
+from agent.anthropic_endpoints import _is_opencode_endpoint
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
@@ -439,10 +440,17 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs["extra_body"] = extra_body
         if params.get("request_overrides"):
             api_kwargs.update(params["request_overrides"])
-        return _finish_kwargs(
+        api_kwargs = _finish_kwargs(
             api_kwargs, sanitized, params,
             supports_prompt_cache_key=bool(params.get("supports_prompt_cache_key")) or _is_openai_api_base_url(base_url),
         )
+        # OpenCode Go requires x-opencode-session for routing (enforced 2026-09-06).
+        if _is_opencode_endpoint(str(api_kwargs.get("base_url") or params.get("base_url") or "").rstrip("/")):
+            import uuid
+            extra_headers = dict(api_kwargs.get("extra_headers") or {})
+            extra_headers.setdefault("x-opencode-session", str(uuid.uuid4()))
+            api_kwargs["extra_headers"] = extra_headers
+        return api_kwargs
 
     def _build_kwargs_from_profile(self, profile, model, sanitized, tools, params):
         """Build API kwargs from a ProviderProfile — every quirk comes from the profile object."""
@@ -489,9 +497,17 @@ class ChatCompletionsTransport(ProviderTransport):
                 extra_body = {k: v for k, v in extra_body.items() if k in ("thinking_config", "thinkingConfig")}
             if extra_body:
                 api_kwargs["extra_body"] = extra_body
-        return _finish_kwargs(
+        api_kwargs = _finish_kwargs(
             api_kwargs, sanitized, params, supports_prompt_cache_key=bool(getattr(profile, "supports_prompt_cache_key", False)),
         )
+        # OpenCode Go requires x-opencode-session for routing (enforced 2026-09-06).
+        base_url = str(api_kwargs.get("base_url") or params.get("base_url") or "").rstrip("/")
+        if _is_opencode_endpoint(base_url):
+            import uuid
+            extra_headers = dict(api_kwargs.get("extra_headers") or {})
+            extra_headers.setdefault("x-opencode-session", str(uuid.uuid4()))
+            api_kwargs["extra_headers"] = extra_headers
+        return api_kwargs
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Normalize an OpenAI ChatCompletion.
