@@ -3430,6 +3430,55 @@ def invalidate_descendants_for_parent_reopen(
     return {"invalidated": invalidated, "terminations": terminations}
 
 
+def is_human_gate_pending(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when the task is parked in triage waiting for a *human* decision.
+
+    Detects the ``block_loop_detected`` → triage path with ``kind=needs_input``
+    and checks whether a human comment (author not matching ``pr-*`` /
+    ``user-session`` / ``auto-*`` / ``specifier`` / ``decomposer``) has arrived
+    *after* the last such event. When no human has responded, the automated
+    triage sweep (auto-decompose / specify --all) must NOT re-promote the task:
+    doing so respawns a worker that re-blocks for the same reason, burning
+    quota in an unbounded loop.
+
+    Returns ``False`` for tasks not in triage or whose last
+    ``block_loop_detected`` has a non-``needs_input`` kind (e.g. ``capability``
+    — a hard wall that a human might still work around, so triage sweep is
+    fine).
+    """
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None or row["status"] != "triage":
+        return False
+    events = list_events(conn, task_id)
+    last_loop = None
+    for ev in reversed(events):
+        if ev.kind == "block_loop_detected":
+            last_loop = ev
+            break
+    if last_loop is None:
+        return False
+    payload = last_loop.payload or {}
+    if payload.get("kind") != "needs_input":
+        return False
+    # Check for a human comment after the last block_loop_detected event.
+    # Worker / automated comments have authors matching pr-*, user-session,
+    # auto-*, specifier, decomposer. A genuine human author is anything else.
+    import re as _re
+    _AUTOMATED_AUTHOR_RE = _re.compile(
+        r"^(pr-|user-session|auto-|specifier$|decomposer$|system$|diagnose-)",
+        re.IGNORECASE,
+    )
+    comments = list_comments(conn, task_id)
+    for c in reversed(comments):
+        if c.created_at < last_loop.created_at:
+            break
+        if not _AUTOMATED_AUTHOR_RE.match(c.author or ""):
+            return False  # A human has responded → gate is lifted
+    return True
+
+
 def specify_triage_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,
@@ -3437,9 +3486,17 @@ def specify_triage_task(
     """Update title/body/assignee (when given) and move ``triage -> todo`` in one
     txn; False when not in triage. Lands in ``todo`` (not ``ready``) so parent
     gating still applies; the audit comment is written only when a field changed.
+
+    Refuses to promote a task parked in triage by ``block_loop_detected`` with
+    ``kind=needs_input`` when no human comment has arrived since the gate
+    event — see :func:`is_human_gate_pending`. This prevents the automated
+    triage sweep from re-spawning a worker that will re-block for the same
+    human-input reason, burning quota in an unbounded loop.
     """
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
+    if is_human_gate_pending(conn, task_id):
+        return False
     assignee = _canonical_assignee(assignee)
     with write_txn(conn):
         existing = conn.execute(

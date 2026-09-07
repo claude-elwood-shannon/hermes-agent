@@ -333,10 +333,14 @@ def decompose_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Return task ids currently in the triage column, EXCLUDING tasks parked
+    by ``block_loop_detected`` with ``kind=needs_input`` that have not received
+    a human comment since the gate event. Those tasks are waiting for a human
+    decision — auto-decomposing or auto-specifying them would re-spawn a worker
+    that re-blocks for the same reason, burning quota in a loop."""
     with kbc.connect_closing() as conn:
         rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
-    return [row.id for row in rows]
+        return [row.id for row in rows if not kb.is_human_gate_pending(conn, row.id)]
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
