@@ -2057,6 +2057,21 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
                 extra_body["plugins"] = [{"id": "pareto-router", "min_coding_score": _ps}]
     if extra_body:
         summary_kwargs["extra_body"] = extra_body
+
+    # OpenCode Go/Anthropic summary path still needs x-opencode-session, even
+    # though this helper bypasses build_api_kwargs to call chat.completions
+    # directly with a rebuilt client.
+    try:
+        from agent.opencode_affinity import merge_opencode_session_headers
+
+        merge_opencode_session_headers(
+            summary_kwargs,
+            getattr(agent, "provider", None),
+            getattr(agent, "base_url", None),
+            getattr(agent, "session_id", None),
+        )
+    except Exception:
+        pass
     return summary_kwargs
 
 
