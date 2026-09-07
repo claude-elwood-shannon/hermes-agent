@@ -968,6 +968,19 @@ class ClientLifecycleMixin:
         # A supplied request-local client was already refreshed in _create_request_anthropic_client.
         if client is None and self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
+
+        # OpenCode Go requires x-opencode-session for routing (enforced 2026-09-06).
+        # Even though build_anthropic_client attaches it to default_headers, some SDK paths
+        # don't send them; ensure it is present in every request's extra_headers.
+        from agent.anthropic_adapter import _is_opencode_endpoint
+        if _is_opencode_endpoint(getattr(self, "base_url", None) or ""):
+            import uuid
+            from agent.opencode_affinity import opencode_session_headers
+            extra = api_kwargs.setdefault("extra_headers", {})
+            if not extra.get("x-opencode-session"):
+                session_id = str(uuid.uuid4())
+                extra.update(opencode_session_headers("opencode-go", self.base_url, session_id))
+
         # Strips Responses-only kwargs that leak in under an api_mode-flip race.
         from agent.anthropic_adapter import create_anthropic_message
         # on_response: rate-limit + credits state live in response headers, which the parsed Message drops.

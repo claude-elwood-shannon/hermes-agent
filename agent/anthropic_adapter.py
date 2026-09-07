@@ -405,10 +405,15 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
             headers.setdefault(k, v)
         # OpenCode Go requires x-opencode-session for backend routing (enforced 2026-09-06).
         try:
+            import uuid
             from agent.opencode_affinity import opencode_session_headers
+            effective_session_id = None
             session_headers = opencode_session_headers("opencode-go", base_url, None)
             if session_headers:
-                headers.update(session_headers)
+                effective_session_id = list(session_headers.values())[0]
+            if not effective_session_id:
+                effective_session_id = str(uuid.uuid4())
+            headers.update(opencode_session_headers("opencode-go", base_url, effective_session_id))
         except Exception:
             pass
     return _new_sdk_client(sdk, kwargs, headers)

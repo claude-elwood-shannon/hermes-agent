@@ -683,6 +683,27 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     so callers can register it with their abort/close machinery; bedrock / MoA
     manage their own clients. Interrupt/abort/close semantics stay in callers.
     """
+    # OpenCode Go requires x-opencode-session on every request. Do it here as a
+    # final guard so no caller/path can forget it.
+    from agent.anthropic_adapter import _is_opencode_endpoint
+    base_url = getattr(agent, "base_url", None) or ""
+    if _is_opencode_endpoint(base_url):
+        import uuid
+        from agent.opencode_affinity import opencode_session_headers
+        extra = api_kwargs.setdefault("extra_headers", {})
+        if not extra.get("x-opencode-session"):
+            session_id = str(uuid.uuid4())
+            extra.update(opencode_session_headers("opencode-go", base_url, session_id))
+            logger.warning(
+                "[OPENGUARD] injected x-opencode-session for %s base_url=%s session_id=%s",
+                getattr(agent, "provider", "unknown"), base_url, session_id,
+            )
+    else:
+        logger.warning(
+            "[OPENGUARD] skip injection: provider=%s base_url=%s api_mode=%s",
+            getattr(agent, "provider", "unknown"), base_url, getattr(agent, "api_mode", "unknown"),
+        )
+
     if agent.api_mode == "codex_responses":
         return agent._run_codex_stream(api_kwargs, client=make_client("codex_stream_request"),
             on_first_delta=getattr(agent, "_codex_on_first_delta", None))
@@ -2712,6 +2733,20 @@ class _StreamingCall(StreamingWaitMonitor):
         # Native Gemini rejects OpenAI's usage-streaming extension.
         if not is_native_gemini_base_url(self.agent.base_url):
             stream_kwargs["stream_options"] = {"include_usage": True}
+        # OpenCode Go requires x-opencode-session for routing (enforced 2026-09-06).
+        from agent.anthropic_adapter import _is_opencode_endpoint
+        base_url = getattr(self.agent, "base_url", None) or ""
+        if _is_opencode_endpoint(base_url):
+            import uuid
+            from agent.opencode_affinity import opencode_session_headers
+            extra = stream_kwargs.setdefault("extra_headers", {})
+            if not extra.get("x-opencode-session"):
+                session_id = str(uuid.uuid4())
+                extra.update(opencode_session_headers("opencode-go", base_url, session_id))
+                logger.warning(
+                    "[OPENGUARD-STREAM] injected x-opencode-session for %s base_url=%s",
+                    getattr(self.agent, "provider", "unknown"), base_url,
+                )
         request_client = self._attempt_request_client = self.clients.set_client(
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
         self.last_chunk_time["t"] = time.time()
@@ -3006,6 +3041,20 @@ class _StreamingCall(StreamingWaitMonitor):
         def _open_anthropic_stream(next_api_kwargs: dict[str, Any]):
             final_kwargs = dict(next_api_kwargs)
             sanitize_anthropic_kwargs(final_kwargs, log_prefix=getattr(self.agent, "log_prefix", ""))
+            # OpenCode Go requires x-opencode-session for routing (enforced 2026-09-06).
+            from agent.anthropic_adapter import _is_opencode_endpoint
+            base_url = getattr(self.agent, "base_url", None) or ""
+            if _is_opencode_endpoint(base_url):
+                import uuid
+                from agent.opencode_affinity import opencode_session_headers
+                extra = final_kwargs.setdefault("extra_headers", {})
+                if not extra.get("x-opencode-session"):
+                    session_id = str(uuid.uuid4())
+                    extra.update(opencode_session_headers("opencode-go", base_url, session_id))
+                    logger.warning(
+                        "[OPENGUARD-ANTHRO-STREAM] injected x-opencode-session for %s base_url=%s",
+                        getattr(self.agent, "provider", "unknown"), base_url,
+                    )
             manager = request_client.messages.stream(**final_kwargs)
             _stream_context["manager"] = manager
             return manager.__enter__()
