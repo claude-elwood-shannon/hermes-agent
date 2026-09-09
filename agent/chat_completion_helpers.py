@@ -724,7 +724,12 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         if not callable(getattr(_completions, "prepare", None)):
             api_kwargs.pop("_moa_prepared_request", None)
         return agent.client.chat.completions.create(**api_kwargs)
-    return make_client("chat_completion_request").chat.completions.create(**api_kwargs)
+    response = make_client("chat_completion_request").chat.completions.create(**api_kwargs)
+    # OBJ-26a: per-request billing capture (x_nanogpt_pricing rides in the body).
+    # Fail-open, gated on nano-gpt.com endpoints inside the helper.
+    from agent.nanogpt_pricing_capture import capture_from_response
+    capture_from_response(agent, response)
+    return response
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -2134,6 +2139,9 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
         summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
         response = _managed_summary_call(
             agent, api_request_id, summary_kwargs, lambda request: summary_client.chat.completions.create(**request), retry_count=retry_count)
+        # OBJ-26a: summary calls bill too — capture (fail-open, NanoGPT-gated).
+        from agent.nanogpt_pricing_capture import capture_from_response
+        capture_from_response(agent, response)
         return _summary_text(agent, response)
     return _attempt
 
@@ -2855,6 +2863,11 @@ class _StreamingCall(StreamingWaitMonitor):
             if upstream_provider is None and isinstance(getattr(chunk, "provider", None), str) and chunk.provider:
                 upstream_provider = chunk.provider  # OpenRouter stamps who served
             if not chunk.choices:
+                # OBJ-26a: the terminal usage chunk carries x_nanogpt_pricing
+                # (live-verified 2026-09-09) — capture BEFORE the usage fold.
+                # Fail-open, gated on nano-gpt.com inside the helper.
+                from agent.nanogpt_pricing_capture import capture_from_chunk
+                capture_from_chunk(self.agent, chunk)
                 usage, finish_reason = self._choiceless_chunk(chunk, finish_reason)
                 usage_obj = usage or usage_obj
                 continue
