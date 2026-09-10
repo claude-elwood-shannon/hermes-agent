@@ -2061,7 +2061,13 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
                 extra_body["plugins"] = [{"id": "pareto-router", "min_coding_score": _ps}]
     if extra_body:
         summary_kwargs["extra_body"] = extra_body
-    return summary_kwargs
+    # The summary is part of the same conversation as the main turn: OpenCode session
+    # affinity must ride on it too, or it routes to a cold backend (and session-enforcing
+    # relays reject it with MissingSessionID). Codex attempts get this via build_api_kwargs.
+    from agent.opencode_affinity import merge_opencode_session_headers
+    return merge_opencode_session_headers(
+        summary_kwargs, agent.provider, agent.base_url, getattr(agent, "session_id", None),
+    )
 
 
 def _summary_text(agent, response, **normalize_kwargs) -> str:
@@ -2083,6 +2089,12 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
+        # Session affinity rides on the summary too (see _iteration_summary_chat_kwargs): on an
+        # OpenCode Anthropic-wire endpoint the relay pins routing per x-opencode-session.
+        from agent.opencode_affinity import merge_opencode_session_headers
+        merge_opencode_session_headers(
+            ant_kw, agent.provider, getattr(agent, "_anthropic_base_url", None), getattr(agent, "session_id", None),
+        )
         response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt
