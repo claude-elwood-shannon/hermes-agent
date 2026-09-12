@@ -17,6 +17,15 @@ from pathlib import Path
 _PROFILE_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz")
 
 
+def _looks_like_profile_archive(name: str) -> bool:
+    """True if `name` (file or directory) ends with a profile-archive suffix.
+
+    The suffix check is case-insensitive so TGZ/tgz/Tar.Gz all match.
+    """
+    lowered = name.casefold()
+    return lowered.endswith(_PROFILE_ARCHIVE_SUFFIXES)
+
+
 def find_forbidden_profile_archives(root: Path) -> list[Path]:
     """Return profile archive paths anywhere in the checkout."""
     root = root.resolve()
@@ -31,7 +40,7 @@ def find_forbidden_profile_archives(root: Path) -> list[Path]:
             if name not in {".git", ".venv", "venv", "node_modules", "__pycache__"}
         ]
         for name in (*dirnames, *filenames):
-            if name.casefold().endswith(_PROFILE_ARCHIVE_SUFFIXES):
+            if _looks_like_profile_archive(name):
                 offenders.append((Path(directory) / name).relative_to(root))
 
     return sorted(offenders, key=lambda path: path.as_posix().casefold())
