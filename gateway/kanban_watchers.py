@@ -31,6 +31,20 @@ from gateway.kanban_watchers_dispatcher import (
     _resolve_dispatcher_settings,
 )
 
+
+def _direction_stop_engaged(component: str) -> bool:
+    """OBJ-42 layer 2: the user's DIRECCION-STOP mandate stop (agent.direction_stop).
+
+    Deferred import keeps the module import-light like the estop gate; a
+    missing/unimportable module must never disable the stop, so failure reads
+    as ENGAGED (fail safe — same direction as the estop stat-error policy).
+    """
+    try:
+        from agent.direction_stop import check_dispatch
+    except Exception:
+        return True
+    return check_dispatch(component, logger)
+
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _GC_INTERVAL_SECONDS = 3600.0
@@ -274,9 +288,16 @@ class GatewayKanbanWatchersMixin:
                 if not _kanban_dispatch_allowed():
                     bad_ticks = 0
                 else:
-                    # Re-read the auto-decompose toggle live so disabling it
-                    # takes effect on the next tick, not on restart.
-                    _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)
+                    # Direction mandate stop (OBJ-42 layer 2): the user's
+                    # DIRECCION-STOP sentinel halts NEW claims/spawns the same
+                    # way — in-flight workers finish; removing the file
+                    # resumes dispatch on the next tick (no restart).
+                    if _direction_stop_engaged("kanban-dispatcher"):
+                        bad_ticks = 0
+                    else:
+                        # Re-read the auto-decompose toggle live so disabling it
+                        # takes effect on the next tick, not on restart.
+                        _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)
                     # See #49638.
                     if _ad_enabled:
                         await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)

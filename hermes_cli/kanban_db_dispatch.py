@@ -1439,6 +1439,18 @@ def dispatch_once(
     resolved DB path so unrelated boards tick in parallel.
     """
     def _locked_tick() -> DispatchResult:
+        # OBJ-42 layer 2: while the user's DIRECCION-STOP sentinel exists,
+        # claim nothing and spawn nothing — the direction mandate is halted.
+        # Deferred import; unimportable module reads as ENGAGED (fail safe).
+        # Zombie reaping still runs (the caller handles it before this), and
+        # in-flight workers are never touched: removing the sentinel resumes
+        # dispatch on the next tick with no restart.
+        try:
+            from agent.direction_stop import check_dispatch
+        except Exception:
+            return DispatchResult(skipped_locked=True)
+        if check_dispatch("kanban-dispatch-once", None):
+            return DispatchResult(skipped_locked=True)
         return _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,
