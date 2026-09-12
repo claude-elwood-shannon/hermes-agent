@@ -1525,10 +1525,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
         except Exception:
             logger.debug("Job '%s': agent-path .env reload failed", job_id, exc_info=True)
         runtime = resolve_runtime_provider(**runtime_kwargs)
-        primary_provider_for_drift = (
-            str(runtime.get("provider") or "").strip().lower() or primary_provider_for_drift
-        )
-        return runtime, model, primary_provider_for_drift
+        return runtime, model
 
     except Exception as resolve_exc:
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during
