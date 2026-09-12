@@ -39,7 +39,6 @@ from hermes_cli.models_catalog_static import (
     _LIVE_FIRST_PICKER_PROVIDERS,
     _MODELS_DEV_PREFERRED,
     _OPENAI_FAST_MODE_PREFIXES,
-    _OPENROUTER_VARIANT_SUFFIXES,
     _PROVIDER_ALIASES,
     _PROVIDER_LABELS,
     _PROVIDER_MODELS,
@@ -440,6 +439,37 @@ def pick_silent_default_model(model_ids: list[str], provider: str = "openrouter"
     return preferred if preferred in model_ids else (model_ids[0] if model_ids else "")
 
 
+def recommended_nous_default_model() -> dict[str, Any]:
+    """The model a Nous account lands on without choosing one, honouring the account's tier.
+
+    Curated catalog plus the Portal's recommendations for the tier, narrowed to the org's policy,
+    then (free tier) to the rows the tier may select, then :func:`pick_silent_default_model`.
+    Contacts the Portal for a fresh tier read, so never call it on a hot path. Returns
+    ``{"provider": "nous", "model": str, "free_tier": bool}``; ``model`` may be ``""`` when nothing
+    is selectable (callers degrade). Shared by ``GET /api/model/recommended-default`` and the
+    sign-in completion in ``hermes_cli.anon_auth`` so both land on the same model.
+    """
+    from hermes_cli import models_pricing as mp
+    from hermes_cli.auth import get_provider_auth_state
+
+    model_ids = get_curated_nous_model_ids()
+    pricing = mp.get_pricing_for_provider("nous") or {}
+    free_tier = check_nous_free_tier(force_fresh=True)
+    try:
+        portal_url = (get_provider_auth_state("nous") or {}).get("portal_base_url", "") or ""
+    except Exception:
+        portal_url = ""
+    # Narrow to policy BEFORE the tier split, so a rescued id still has to pass the free/paid predicate.
+    policy_allowed = mp.nous_policy_allowed_ids()
+    union = union_with_portal_free_recommendations if free_tier else union_with_portal_paid_recommendations
+    model_ids, pricing = union(model_ids, pricing, portal_url)
+    model_ids = mp.restrict_to_nous_policy(model_ids, policy_allowed, rescue_empty=True)
+    if free_tier:
+        model_ids, _unavailable = partition_nous_models_by_tier(model_ids, pricing, free_tier=True)
+    return {"provider": "nous", "model": pick_silent_default_model(model_ids, provider="nous"),
+            "free_tier": bool(free_tier)}
+
+
 def get_default_model_for_provider(provider: str) -> str:
     """Cost-safe default model for a provider, or "" — the NON-INTERACTIVE fallback when a provider
     is configured but no model was ever selected."""
@@ -805,13 +835,6 @@ def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
         name_lower == model.lower()
         for provider in providers
         for model in _provider_catalog_names(provider))
-
-
-def _openrouter_variant_base(model_id: str) -> Optional[str]:
-    """Base model id when ``model_id`` carries a recognized OpenRouter routing-variant suffix
-    (``x-ai/grok-4:nitro`` → ``x-ai/grok-4``), else ``None``."""
-    base, sep, suffix = (model_id or "").rpartition(":")
-    return base if sep and base and suffix.lower() in _OPENROUTER_VARIANT_SUFFIXES else None
 
 
 def _resolve_static_model_alias(
